@@ -6,7 +6,12 @@ const playPingSound = () => {
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         if (!AudioContext) return;
         
+        // browsers require audio context to be resumed if suspended
         const ctx = new AudioContext();
+        if (ctx.state === 'suspended') {
+            ctx.resume();
+        }
+
         const osc = ctx.createOscillator();
         const gainNode = ctx.createGain();
 
@@ -49,15 +54,28 @@ export const useAppNotification = () => {
     }, []);
 
     const notify = useCallback((title, body) => {
-        // Only notify and play sound when the tab is hidden
+        // ALWAYS play the sound ping for incoming messages
+        playPingSound();
+
+        // ONLY show the visual desktop notification if the tab is hidden
         if (document.hidden) {
-            playPingSound();
-            
             if ("Notification" in window && Notification.permission === "granted") {
-                new Notification(title, {
-                    body,
-                    icon: '/favicon.svg' // Assuming this exists as per index.html
-                });
+                // Try Service Worker registration first for native PWA behavior
+                if ('serviceWorker' in navigator) {
+                    navigator.serviceWorker.ready.then((registration) => {
+                        registration.showNotification(title, {
+                            body,
+                            icon: '/favicon.svg',
+                            badge: '/favicon.svg',
+                            vibrate: [200, 100, 200]
+                        });
+                    }).catch(() => {
+                        // Fallback
+                        new Notification(title, { body, icon: '/favicon.svg' });
+                    });
+                } else {
+                    new Notification(title, { body, icon: '/favicon.svg' });
+                }
             }
         }
     }, []);

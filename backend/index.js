@@ -130,6 +130,19 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Typing Indicators
+  socket.on('typing_started', ({ groupId, nickname, uid }) => {
+    if (groupId) {
+      socket.to(groupId).emit('user_typing_update', { uid, nickname, isTyping: true });
+    }
+  });
+
+  socket.on('typing_stopped', ({ groupId, nickname, uid }) => {
+    if (groupId) {
+      socket.to(groupId).emit('user_typing_update', { uid, nickname, isTyping: false });
+    }
+  });
+
   // Handle disconnection
   socket.on('disconnect', async () => {
     console.log(`[-] Disconnected: ${socket.id}`);
@@ -141,6 +154,8 @@ io.on('connection', (socket) => {
       
       // Update room active counts for any rooms they were in
       // Actually finding rooms after disconnect is tricky for memory arrays, but this suffices for UX updates.
+      // Broadcast a typing_stopped event globally just in case they disconnected while typing
+      io.emit('user_typing_update', { uid: userData.uid, nickname: userData.nickname, isTyping: false });
     }
   });
 });

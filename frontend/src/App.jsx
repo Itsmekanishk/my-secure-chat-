@@ -28,8 +28,9 @@ function App() {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [currentUser, setCurrentUser] = useState(null); 
   const [isConnected, setIsConnected] = useState(false);
-  const [uploading, setUploading] = useState(false);
   const [loginError, setLoginError] = useState('');
+  
+  const [typingUsers, setTypingUsers] = useState([]);
   
   // Auth Form State
   const [username, setUsername] = useState('');
@@ -39,7 +40,7 @@ function App() {
   const [isCheckingSession, setIsCheckingSession] = useState(true);
 
   const chatEndRef = useRef(null);
-  const fileInputRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
   const lastNotifiedMsgId = useRef(null);
   const { requestPermission, notify } = useAppNotification();
 
@@ -64,7 +65,7 @@ function App() {
     }
     
     function onUserStatusChange({ uid, status }) {
-       setAllUsers(prev => prev.map(u => u._id === uid ? { ...u, status } : u));
+       setAllUsers(prev => prev.map(u => String(u._id) === String(uid) ? { ...u, status } : u));
     }
 
     function onUserJoined(user) {
@@ -87,6 +88,14 @@ function App() {
       setMessages(formattedHistory);
     }
 
+    function onUserTypingUpdate({ uid, nickname, isTyping }) {
+      setTypingUsers(prev => {
+        const filtered = prev.filter(u => String(u.uid) !== String(uid));
+        if (isTyping) return [...filtered, { uid, nickname }];
+        return filtered;
+      });
+    }
+
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
     socket.on('receive_message', onReceiveMessage);
@@ -94,17 +103,19 @@ function App() {
     socket.on('user_joined', onUserJoined);
     socket.on('user_status_change', onUserStatusChange);
     socket.on('load_history', onLoadHistory);
+    socket.on('user_typing_update', onUserTypingUpdate);
 
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
       socket.off('receive_message', onReceiveMessage);
       socket.off('active_users', onActiveUsers);
-      socket.off('user_joined', onUserJoined);
-      socket.off('user_status_change', onUserStatusChange);
-      socket.off('load_history', onLoadHistory);
-    };
-  }, []);
+        socket.off('user_joined', onUserJoined);
+        socket.off('user_status_change', onUserStatusChange);
+        socket.off('load_history', onLoadHistory);
+        socket.off('user_typing_update', onUserTypingUpdate);
+      };
+    }, []);
 
   // Async task to decrypt messages when state changes
   useEffect(() => {
@@ -128,23 +139,10 @@ function App() {
         };
 
         const tryDecryptTextPayload = async (p) => {
-          if (!p || p.isMedia || !p.cipherText || !p.iv) return null;
+          if (!p || p.cipherText == null || !p.iv) return null;
           try {
             const sharedSecret = await deriveSharedKey();
             return await decryptText(p.cipherText, p.iv, sharedSecret);
-          } catch (_) {
-            return null;
-          }
-        };
-
-        const tryDecryptMediaPayload = async (p) => {
-          if (!p || !p.isMedia || !p.storageUrl || !p.iv) return null;
-          try {
-            const sharedSecret = await deriveSharedKey();
-            const response = await fetch(p.storageUrl);
-            const encryptedAb = await response.arrayBuffer();
-            const decryptedBlob = await decryptMedia(encryptedAb, p.iv, sharedSecret);
-            return URL.createObjectURL(decryptedBlob);
           } catch (_) {
             return null;
           }
@@ -157,25 +155,15 @@ function App() {
         for (const key of mySlotKeys) {
           const p = payloads[key];
           if (!p) continue;
-          if (p.isMedia) {
-            const objectUrl = await tryDecryptMediaPayload(p);
-            if (objectUrl) return { ...msg, mediaUrl: objectUrl, isMedia: true, decryptedText: true };
-          } else {
-            const text = await tryDecryptTextPayload(p);
-            if (text != null) return { ...msg, text, decryptedText: true };
-          }
+          const text = await tryDecryptTextPayload(p);
+          if (text != null) return { ...msg, text, decryptedText: true };
         }
 
         // ── STEP 2: Fallback — try ALL slots (handles messages sent before we joined, legacy history, etc.) ──
         const payloadEntries = Object.entries(payloads).filter(([, p]) => p && typeof p === 'object');
         for (const [, p] of payloadEntries) {
-          if (p.isMedia) {
-            const objectUrl = await tryDecryptMediaPayload(p);
-            if (objectUrl) return { ...msg, mediaUrl: objectUrl, isMedia: true, decryptedText: true };
-          } else {
-            const text = await tryDecryptTextPayload(p);
-            if (text != null) return { ...msg, text, decryptedText: true };
-          }
+          const text = await tryDecryptTextPayload(p);
+          if (text != null) return { ...msg, text, decryptedText: true };
         }
 
         // ── Could not decrypt — either we were offline when message was sent, or keys rotated ──
@@ -189,7 +177,7 @@ function App() {
           lastNotifiedMsgId.current = newestMsg.id;
           const isRecent = (new Date() - new Date(newestMsg.timestamp)) < 10000;
           if (isRecent) {
-            const bodyText = newestMsg.isMedia ? '📷 Secure Media' : (newestMsg.decryptedText && !newestMsg.text.startsWith('<Encrypted')) ? newestMsg.text : '🔒 Encrypted Message';
+            const bodyText = (newestMsg.decryptedText && !newestMsg.text.startsWith('<Encrypted')) ? newestMsg.text : '🔒 Encrypted Message';
             notify('New Encrypted Message', bodyText);
           }
         }
@@ -247,6 +235,7 @@ function App() {
 
         setCurrentUser(fullUser);
         connectToRelay(fullUser);
+        fetchInitialData(token); // FIX: Ensure sidebar list populates on page refresh
         requestPermission();
       } catch (err) {
         console.error("Session check failed", err);
@@ -532,6 +521,14 @@ function App() {
     e.preventDefault();
     if (newMessage.trim() === '') return;
     
+    // Clear typing timeout and emit stopped upon actual send
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    socket.emit('typing_stopped', { 
+         groupId: activeGroup ? activeGroup._id : 'global', 
+         nickname: currentUser.nickname, 
+         uid: String(currentUser.uid ?? currentUser.id ?? currentUser._id) 
+    });
+    
     const groupId = activeGroup ? activeGroup._id : 'global';
     const usersToEncryptFor = await Promise.race([
       new Promise((resolve) => {
@@ -580,77 +577,31 @@ function App() {
     setShowEmojiPicker(false);
   };
 
+  const handleTypingChange = (e) => {
+    const val = e.target.value;
+    setNewMessage(val);
+    
+    if (!currentUser) return;
+    const groupId = activeGroup ? activeGroup._id : 'global';
+    const uid = String(currentUser.uid ?? currentUser.id ?? currentUser._id);
+    
+    if (val.trim() !== '') {
+       socket.emit('typing_started', { groupId, nickname: currentUser.nickname, uid });
+       
+       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+       typingTimeoutRef.current = setTimeout(() => {
+           socket.emit('typing_stopped', { groupId, nickname: currentUser.nickname, uid });
+       }, 2500);
+    } else {
+       socket.emit('typing_stopped', { groupId, nickname: currentUser.nickname, uid });
+       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    }
+  };
+
   const onEmojiClick = (emojiObject) => {
     setNewMessage(prevInput => prevInput + emojiObject.emoji);
   };
 
-  const handleImageUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    
-    setUploading(true);
-    
-    try {
-      const groupId = activeGroup ? activeGroup._id : 'global';
-      const usersToEncryptFor = await Promise.race([
-        new Promise((resolve) => {
-          socket.emit('get_active_users', { groupId }, (users) => {
-            resolve(Array.isArray(users) ? users : []);
-          });
-        }),
-        new Promise((resolve) => setTimeout(() => resolve(activeUsers), 2500))
-      ]);
-      
-      const arrayBuffer = await file.arrayBuffer();
-      const encryptedPayloads = {};
-      const myPubKey = await importPublicKey(currentUser.publicKeyBase64);
-      const myUid = String(currentUser.uid ?? currentUser.id ?? currentUser._id);
-      const seenKeysByUid = {};
-      
-      for (const user of usersToEncryptFor) {
-        const uid = String(user?.uid ?? user?.id ?? user?._id ?? '');
-        if (!uid || !user?.publicKeyBase64 || uid === myUid) continue;
-        const keyIndex = (seenKeysByUid[uid] = (seenKeysByUid[uid] || 0) + 1);
-        const payloadKey = keyIndex === 1 ? uid : `${uid}__${keyIndex}`;
-        try {
-          const theirKey = await importPublicKey(user.publicKeyBase64);
-          const sharedSecret = await deriveAESKey(currentUser.privateKey, theirKey);
-          const { cipherTextBlob, iv } = await encryptMedia(arrayBuffer, sharedSecret);
-          const uniqueName = `media/${Date.now()}_${payloadKey}.enc`;
-          const storageRef = ref(storage, uniqueName);
-          await uploadBytes(storageRef, cipherTextBlob);
-          const storageUrl = await getDownloadURL(storageRef);
-          encryptedPayloads[payloadKey] = { isMedia: true, storageUrl, iv };
-        } catch (err) {
-          console.warn('Skip encrypt media for user', uid, err);
-        }
-      }
-      
-      const myShared = await deriveAESKey(currentUser.privateKey, myPubKey);
-      const { cipherTextBlob: myBlob, iv: myIv } = await encryptMedia(arrayBuffer, myShared);
-      const myName = `media/${Date.now()}_${myUid}.enc`;
-      const myRef = ref(storage, myName);
-      await uploadBytes(myRef, myBlob);
-      const myUrl = await getDownloadURL(myRef);
-      encryptedPayloads[myUid] = { isMedia: true, storageUrl: myUrl, iv: myIv };
-
-      const msg = {
-        id: Date.now().toString(),
-        sender: myUid,
-        senderPublicKey: currentUser.publicKeyBase64,
-        encryptedPayloads,
-        timestamp: new Date().toISOString(),
-        groupId
-      };
-      
-      socket.emit('send_message', msg);
-    } catch (err) {
-      console.error("Image upload failed", err);
-    } finally {
-      setUploading(false);
-      e.target.value = null;
-    }
-  };
 
   const getUser = (id) => {
     const s = String(id);
@@ -852,11 +803,7 @@ function App() {
                     </div>
                     
                     <div className="msg-bubble shadow-sm">
-                       {msg.isMedia ? (
-                          <img src={msg.mediaUrl} alt="Secure Upload" className="max-w-[200px] sm:max-w-xs rounded-sm mt-1 border border-borderCol opacity-90" />
-                       ) : (
-                          msg.text
-                       )}
+                       {msg.text}
                     </div>
                   </div>
                 </div>
@@ -865,7 +812,7 @@ function App() {
             <div ref={chatEndRef} className="h-4" />
           </div>
 
-          <div className="input-area absolute bottom-0 left-0 right-0 bg-surface z-20">
+          <div className="input-area w-full bg-surface z-20">
             {showEmojiPicker && (
                <div className="absolute bottom-[80px] left-4 z-50 shadow-2xl">
                   <EmojiPicker 
@@ -877,27 +824,24 @@ function App() {
                   />
                </div>
             )}
-            <form onSubmit={handleSendMessage} className="w-full">
+            <form onSubmit={handleSendMessage} className="w-full relative">
+               {typingUsers.length > 0 && (
+                 <div className="absolute -top-7 left-4 text-[10px] font-mono text-accent flex items-center gap-1 bg-[#0a0a0f] px-2 py-1 border border-borderCol">
+                   {typingUsers.length === 1 
+                     ? `${typingUsers[0].nickname} is typing` 
+                     : typingUsers.length === 2 
+                       ? `${typingUsers[0].nickname} and 1 other are typing` 
+                       : `${typingUsers[0].nickname} and ${typingUsers.length - 1} others are typing`}
+                   <span className="flex gap-[2px] ml-1">
+                     <div className="w-1 h-1 bg-accent rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                     <div className="w-1 h-1 bg-accent rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                     <div className="w-1 h-1 bg-accent rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                   </span>
+                 </div>
+               )}
                <div className="input-wrapper focus-within:border-[rgba(0,255,157,0.4)] border border-borderCol bg-surface2 transition-colors">
                  <span className="input-prefix text-accent px-1">›</span>
                  
-                 <input 
-                   type="file" 
-                   accept="image/*,video/*"
-                   className="hidden" 
-                   ref={fileInputRef}
-                   onChange={handleImageUpload}
-                 />
-
-                 <button 
-                   type="button" 
-                   className="p-1.5 text-muted hover:text-white transition-colors cursor-pointer"
-                   onClick={() => fileInputRef.current.click()}
-                   disabled={uploading}
-                 >
-                   {uploading ? <div className="w-4 h-4 border-2 border-t-2 border-muted rounded-full animate-spin"></div> : <FiImage size={15} />}
-                 </button>
-
                  <button 
                    type="button" 
                    className="p-1.5 pr-2 text-muted hover:text-white transition-colors cursor-pointer"
@@ -909,7 +853,7 @@ function App() {
                  <textarea
                    id="msg-input"
                    value={newMessage}
-                   onChange={(e) => setNewMessage(e.target.value)}
+                   onChange={handleTypingChange}
                    onKeyDown={(e) => {
                      if (e.key === 'Enter' && !e.shiftKey) {
                        e.preventDefault();
@@ -922,19 +866,16 @@ function App() {
                  
                  <button 
                    type="submit" 
-                   disabled={!newMessage.trim() && !uploading}
+                   disabled={!newMessage.trim()}
                    className="send-btn bg-accent hover:bg-[#00ffb0] text-bg disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                  >
                    <FiSend size={15} />
                  </button>
                </div>
                
-               <div className="input-footer text-muted hidden sm:flex">
+               <div className="input-footer text-gray-400 hidden sm:flex opacity-80 mt-2">
                  <span>CHANNEL: #SECURE-GROUP · ENCRYPTION: ON · RELAY: TOR</span>
-                 {uploading ? 
-                   <span className="text-accent animate-pulse font-bold tracking-widest text-[10px]">UPLOADING ENCRYPTED BLOB...</span> : 
-                   <span className="typing-indicator text-accent3">{newMessage.trim() && `${currentUser.nickname} is writing...`}</span>
-                 }
+                 <span className="typing-indicator text-accent3">{newMessage.trim() && `${currentUser.nickname} is writing...`}</span>
                </div>
             </form>
           </div>

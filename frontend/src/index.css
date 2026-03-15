@@ -537,7 +537,7 @@ body::after {
   line-height: 1.5;
 }
 
-#msg-input::placeholder { color: var(--muted); }
+#msg-input::placeholder { color: rgba(232, 232, 240, 0.4); } /* Brighter than --muted for visibility */
 
 .input-footer {
   display: flex; justify-content: space-between; align-items: center;
