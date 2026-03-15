@@ -12,7 +12,7 @@ import { signInWithPopup } from "firebase/auth";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 // In dev, use relative /api so Vite proxies to backend (avoids CORS and "Failed to fetch")
-const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "/api" : "http://localhost:5001/api");
+const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "/api" : "https://my-secure-chat.onrender.com/api");
 const API_URL = `${API_BASE}/auth`;
 
 function App() {
