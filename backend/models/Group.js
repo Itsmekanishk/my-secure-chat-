@@ -6,11 +6,15 @@ const groupSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  isGeneral: {
+    type: Boolean,
+    default: false
+  },
   members: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   }],
-  createdBy: {
+  admin: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true

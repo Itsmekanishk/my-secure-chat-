@@ -36,13 +36,17 @@ router.get('/', async (req, res) => {
 // Create a new group
 router.post('/', async (req, res) => {
   try {
-    const { name } = req.body;
+    const { name, members } = req.body;
     if (!name) return res.status(400).json({ error: 'Group name required' });
     
+    // Ensure the creator is essentially always a member
+    const uniqueMembers = [...new Set([...(members || []), req.userId])];
+
     const newGroup = new Group({
       name,
-      createdBy: req.userId,
-      members: [req.userId]
+      admin: req.userId,
+      isGeneral: false,
+      members: uniqueMembers
     });
     
     await newGroup.save();
@@ -59,6 +63,8 @@ router.put('/:id', async (req, res) => {
     const group = await Group.findById(req.params.id);
     
     if (!group) return res.status(404).json({ error: 'Group not found' });
+    if (group.isGeneral) return res.status(403).json({ error: 'Cannot modify the General group' });
+    if (group.admin.toString() !== req.userId) return res.status(403).json({ error: 'Only the admin can rename this group' });
     
     group.name = name;
     await group.save();
@@ -66,6 +72,24 @@ router.put('/:id', async (req, res) => {
     res.json(group);
   } catch (err) {
     res.status(500).json({ error: 'Failed to rename group' });
+  }
+});
+
+// Delete a group
+router.delete('/:id', async (req, res) => {
+  try {
+    const group = await Group.findById(req.params.id);
+    
+    if (!group) return res.status(404).json({ error: 'Group not found' });
+    if (group.isGeneral) return res.status(403).json({ error: 'Cannot delete the General group' });
+    if (group.admin.toString() !== req.userId) return res.status(403).json({ error: 'Only the admin can delete this group' });
+
+    await group.deleteOne();
+    
+    res.json({ message: 'Group deleted successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to delete group' });
   }
 });
 

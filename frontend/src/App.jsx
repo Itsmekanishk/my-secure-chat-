@@ -24,6 +24,7 @@ function App() {
   const [activeGroup, setActiveGroup] = useState(null); // null = global default
   const [showNewGroupForm, setShowNewGroupForm] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
+  const [newGroupMembers, setNewGroupMembers] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [currentUser, setCurrentUser] = useState(null); 
@@ -621,12 +622,13 @@ function App() {
        const res = await fetch(`${API_BASE}/groups`, {
          method: 'POST',
          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-         body: JSON.stringify({ name: newGroupName })
+         body: JSON.stringify({ name: newGroupName, members: newGroupMembers })
        });
        if (res.ok) {
          const newG = await res.json();
          setGroups([...groups, newG]);
          setNewGroupName('');
+         setNewGroupMembers([]);
          setShowNewGroupForm(false);
          handleJoinGroup(newG);
        }
@@ -656,12 +658,83 @@ function App() {
          const updatedG = await res.json();
          setGroups(groups.map(g => g._id === updatedG._id ? updatedG : g));
          setActiveGroup(updatedG);
+      } else {
+         const data = await res.json();
+         alert(data.error || 'Failed to rename group');
       }
     } catch(err) { console.error("Failed to rename group:", err); }
   };
 
+  const handleDeleteGroup = async () => {
+    if (!activeGroup) return;
+    const confirmDelete = window.confirm(`Are you sure you want to delete ${activeGroup.name}?`);
+    if (!confirmDelete) return;
+
+    try {
+      const token = localStorage.getItem('cipherchat_token');
+      const res = await fetch(`${API_BASE}/groups/${activeGroup._id}`, {
+         method: 'DELETE',
+         headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+         setGroups(groups.filter(g => g._id !== activeGroup._id));
+         handleJoinGroup(null); // Return to GENERAL
+      } else {
+         const data = await res.json();
+         alert(data.error || 'Failed to delete group');
+      }
+    } catch(err) { console.error("Failed to delete group:", err); }
+  };
+
+
   return (
     <div id="chat-page" className="flex">
+      {showNewGroupForm && (
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
+          <div className="bg-[#0a0a0f] border border-borderCol w-full max-w-md p-6 relative">
+            <button type="button" onClick={() => { setShowNewGroupForm(false); setNewGroupName(''); setNewGroupMembers([]); }} className="absolute text-accent top-4 right-4 text-xs font-mono hover:text-white cursor-pointer">[X]</button>
+            <h2 className="text-accent font-mono text-sm mb-4">// CREATE SECURE CHANNEL</h2>
+            <form onSubmit={handleCreateGroup} className="flex flex-col gap-4">
+               <div>
+                  <label className="text-[10px] font-mono text-muted mb-1 block">CHANNEL DESIGNATION</label>
+                  <input 
+                    type="text" 
+                    value={newGroupName} 
+                    onChange={e => setNewGroupName(e.target.value)}
+                    placeholder="e.g. ALPHA_SQUAD"
+                    className="w-full bg-bg border border-borderCol text-text text-xs font-mono p-2 focus:outline-none focus:border-accent"
+                  />
+               </div>
+               <div>
+                  <label className="text-[10px] font-mono text-muted mb-1 block">SELECT OPERATORS ({newGroupMembers.length})</label>
+                  <div className="max-h-[200px] overflow-y-auto border border-borderCol bg-bg p-2 flex flex-col gap-1">
+                     {allUsers.filter(u => u._id !== currentUser.uid).map(user => {
+                        const isSelected = newGroupMembers.includes(user._id);
+                        return (
+                          <div 
+                            key={user._id} 
+                            onClick={() => {
+                               setNewGroupMembers(prev => 
+                                 isSelected ? prev.filter(id => id !== user._id) : [...prev, user._id]
+                               );
+                            }}
+                            className={`flex items-center justify-between p-2 text-xs font-mono cursor-pointer border ${isSelected ? 'border-accent bg-[rgba(0,255,157,0.1)] text-accent' : 'border-transparent text-muted hover:bg-surface2 hover:text-text'}`}
+                          >
+                             <div className="flex items-center gap-2">
+                               <img src={user.avatar} alt={user.nickname} className="w-6 h-6 rounded-full overflow-hidden object-cover border border-borderCol bg-black" />
+                               <span>{user.nickname}</span>
+                             </div>
+                             <div>{isSelected ? '[✓]' : '[ ]'}</div>
+                          </div>
+                        )
+                     })}
+                  </div>
+               </div>
+               <button type="submit" disabled={!newGroupName.trim() || newGroupMembers.length === 0} className="w-full text-bg bg-accent p-2 text-xs font-mono font-bold mt-2 hover:bg-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer">INITIALIZE CHANNEL</button>
+            </form>
+          </div>
+        </div>
+      )}
       <nav className="chat-nav">
         <div className="nav-brand">
           <PillAvatar color1="#00ff9d" color2="#a855f7" symbol="CC" size={28} className="nav-pill" />
@@ -696,21 +769,7 @@ function App() {
                  <span>// SECURE CHANNELS //</span>
                  <button onClick={() => setShowNewGroupForm(!showNewGroupForm)} className="text-accent hover:text-white transition-colors px-2 py-1 bg-surface2 text-xs">+</button>
              </div>
-             
-             {showNewGroupForm && (
-               <form onSubmit={handleCreateGroup} className="flex gap-2 mb-4 px-2">
-                 <input 
-                   type="text" 
-                   value={newGroupName} 
-                   onChange={e => setNewGroupName(e.target.value)}
-                   placeholder="CHANNEL NAME"
-                   className="bg-bg border border-borderCol text-text text-xs font-mono p-1 flex-1 focus:outline-none focus:border-accent"
-                 />
-                 <button type="submit" className="text-bg bg-accent px-2 py-1 text-xs font-mono">ADD</button>
-               </form>
-             )}
-
-             <div className="flex flex-col">
+             <div className="flex flex-col mt-4">
                 <div 
                    onClick={() => handleJoinGroup(null)}
                    className={`px-3 py-2 text-xs font-mono cursor-pointer transition-colors border-l-2 custom-menu-item mb-1 ${!activeGroup ? 'border-accent bg-[rgba(0,255,157,0.05)] text-accent' : 'border-transparent text-muted hover:bg-surface2 hover:text-text'}`}
@@ -759,12 +818,20 @@ function App() {
                 <div className="flex items-center gap-2">
                    <div className="group-name"># {activeGroup ? activeGroup.name.toUpperCase() : 'SECURE GROUP'}</div>
                    {activeGroup && (
-                     <button 
-                        onClick={handleRenameGroup}
-                        className="text-[9px] font-mono text-accent border border-accent/20 px-1 py-0.5 hover:bg-accent hover:text-bg transition-colors cursor-pointer"
-                     >
-                        [RENAME]
-                     </button>
+                     <div className="flex gap-2 items-center">
+                       <button 
+                          onClick={handleRenameGroup}
+                          className="text-[9px] font-mono text-accent border border-accent/20 px-1 py-0.5 hover:bg-accent hover:text-bg transition-colors cursor-pointer"
+                       >
+                          [RENAME]
+                       </button>
+                       <button 
+                          onClick={handleDeleteGroup}
+                          className="text-[9px] font-mono text-[#ff2d78] border border-[#ff2d78]/20 px-1 py-0.5 hover:bg-[#ff2d78] hover:text-white transition-colors cursor-pointer"
+                       >
+                          [DELETE]
+                       </button>
+                     </div>
                    )}
                 </div>
                 <div className="group-meta hidden sm:block">end-to-end encrypted · ephemeral</div>
