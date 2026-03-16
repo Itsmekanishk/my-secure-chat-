@@ -97,6 +97,16 @@ function App() {
       });
     }
 
+    function onUnauthorized({ message }) {
+      console.warn('[!] Unauthorized:', message);
+      alert(`[ACCESS DENIED] ${message}`);
+      // Kick user back to the open GENERAL channel
+      setActiveGroup(null);
+      setMessages([]);
+      setDecryptedMessages([]);
+      socket.emit('join_group', { groupId: 'global' });
+    }
+
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
     socket.on('receive_message', onReceiveMessage);
@@ -105,6 +115,7 @@ function App() {
     socket.on('user_status_change', onUserStatusChange);
     socket.on('load_history', onLoadHistory);
     socket.on('user_typing_update', onUserTypingUpdate);
+    socket.on('unauthorized', onUnauthorized);
 
     return () => {
       socket.off('connect', onConnect);
@@ -115,6 +126,7 @@ function App() {
         socket.off('user_status_change', onUserStatusChange);
         socket.off('load_history', onLoadHistory);
         socket.off('user_typing_update', onUserTypingUpdate);
+        socket.off('unauthorized', onUnauthorized);
       };
     }, []);
 

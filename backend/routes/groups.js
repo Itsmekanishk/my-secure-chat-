@@ -23,10 +23,10 @@ const verifyToken = (req, res, next) => {
 
 router.use(verifyToken);
 
-// Get all groups
+// Get groups the current user is a member of
 router.get('/', async (req, res) => {
   try {
-    const groups = await Group.find().sort({ createdAt: 1 });
+    const groups = await Group.find({ members: req.userId }).sort({ createdAt: 1 });
     res.json(groups);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch groups' });

@@ -23,6 +23,7 @@ mongoose.connect(process.env.MONGO_URI)
 .catch((err) => console.error('[x] MongoDB connection error:', err));
 
 const Message = require('./models/Message');
+const Group = require('./models/Group');
 
 const io = new Server(server, {
   cors: {
@@ -86,7 +87,23 @@ io.on('connection', (socket) => {
   socket.on('join_group', async ({ groupId }) => {
      const previousRooms = Array.from(socket.rooms).filter(r => r !== socket.id);
      previousRooms.forEach(room => socket.leave(room)); // Leave previous group
-     
+
+     // ── Membership guard (skip for the open 'global' room) ──
+     if (groupId !== 'global') {
+       const userData = connectedUsers.get(socket.id);
+       const userId = userData && String(userData.uid ?? userData.id ?? userData._id ?? '');
+       if (!userId) {
+         socket.emit('unauthorized', { message: 'Authentication required to join this group.' });
+         return;
+       }
+       const group = await Group.findOne({ _id: groupId, members: userId });
+       if (!group) {
+         console.warn(`[!] Blocked ${socket.id} (${userId}) from joining group ${groupId} — not a member`);
+         socket.emit('unauthorized', { message: 'You are not a member of this group.' });
+         return;
+       }
+     }
+
      socket.join(groupId);
      console.log(`[+] Socket ${socket.id} joined Group ${groupId}`);
      
@@ -106,7 +123,23 @@ io.on('connection', (socket) => {
   socket.on('send_message', async (encryptedPayload) => {
     const groupId = encryptedPayload.groupId;
     console.log(`[->] Routing encrypted payload from ${socket.id} to Group ${groupId}`);
-    
+
+    // ── Membership guard (skip for the open 'global' room) ──
+    if (groupId && groupId !== 'global') {
+      const userData = connectedUsers.get(socket.id);
+      const userId = userData && String(userData.uid ?? userData.id ?? userData._id ?? '');
+      if (!userId) {
+        socket.emit('unauthorized', { message: 'Authentication required to send messages.' });
+        return;
+      }
+      const group = await Group.findOne({ _id: groupId, members: userId });
+      if (!group) {
+        console.warn(`[!] Blocked message from ${socket.id} (${userId}) to group ${groupId} — not a member`);
+        socket.emit('unauthorized', { message: 'Cannot send messages to this group.' });
+        return;
+      }
+    }
+
     // Store in MongoDB
     try {
       const newMsg = new Message({
